@@ -1,0 +1,114 @@
+package app
+
+import (
+	"database/sql"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	_ "modernc.org/sqlite"
+)
+
+// Run 启动服务入口，由 backend/main.go 调用。
+func Run() {
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatalf("配置读取失败: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", cfg.SQLitePath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		log.Fatalf("数据库打开失败: %v", err)
+	}
+	defer db.Close()
+
+	if err = db.Ping(); err != nil {
+		log.Fatalf("数据库连接失败: %v", err)
+	}
+	if err = initSchema(db); err != nil {
+		log.Fatalf("数据库初始化失败: %v", err)
+	}
+
+	runtimeCfg, err := loadRuntimeConfig(db)
+	if err != nil {
+		log.Fatalf("运行时配置加载失败: %v", err)
+	}
+
+	if err = ensureInitAdmin(db); err != nil {
+		log.Fatalf("初始超管创建失败: %v", err)
+	}
+
+	server := &APIServer{
+		cfg: cfg,
+		db:  db,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		runtime:   runtimeCfg,
+		cache:     newMemoryCache(),
+		rl:        newRateLimiter(),
+		matchLock: map[string]time.Time{},
+	}
+	// 启动后台维护协程：缓存过期清理 + match 锁兜底回收。
+	go server.cache.gcLoop()
+	go server.cleanupMatchLoop()
+
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Recoverer)
+	r.Use(server.cors)
+
+	registerRoutes(r, server)
+
+	log.Printf("proxy service listening on %s", cfg.ListenAddr)
+	if err = http.ListenAndServe(cfg.ListenAddr, r); err != nil {
+		log.Fatalf("服务启动失败: %v", err)
+	}
+}
+
+// registerRoutes 统一注册后台管理接口、代理接口和前端静态资源路由。
+func registerRoutes(r chi.Router, server *APIServer) {
+	r.Route("/admin/api", func(admin chi.Router) {
+		admin.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, "OK", "running", map[string]string{"time": time.Now().Format(time.RFC3339)})
+		})
+		admin.Get("/auth/turnstile/site-key", server.handleTurnstileSiteKey)
+		admin.Post("/auth/email/send-register", server.handleSendRegisterCode)
+		admin.Post("/auth/register", server.handleRegister)
+		admin.Post("/auth/login", server.handleLogin)
+
+		admin.Group(func(protected chi.Router) {
+			protected.Use(server.authUserMiddleware)
+			protected.Get("/me", server.handleMe)
+			protected.Get("/stats/me", server.handleMyStats)
+			protected.Get("/risk/me", server.handleMyRisk)
+			protected.Post("/secret/send-reset-code", server.handleSendResetCode)
+			protected.Post("/secret/reveal", server.handleRevealSecret)
+			protected.Post("/secret/reset", server.handleResetSecret)
+		})
+
+		admin.Group(func(adm chi.Router) {
+			adm.Use(server.authAdminMiddleware)
+			adm.Get("/admin/users", server.handleAdminUsers)
+			adm.Post("/admin/users/{userID}/ban", server.handleAdminBan)
+			adm.Post("/admin/users/{userID}/unban", server.handleAdminUnban)
+			adm.Get("/admin/stats/global", server.handleAdminGlobalStats)
+			adm.Get("/admin/config", server.handleAdminGetConfig)
+			adm.Put("/admin/config", server.handleAdminUpdateConfig)
+		})
+	})
+
+	// Proxy routes
+	r.Get("/api/v2/comment/{episodeId}", server.proxyGET)
+	r.Get("/api/v2/search/episodes", server.proxyGET)
+	r.Get("/api/v2/bangumi/{animeId}", server.proxyGET)
+	r.Get("/api/v2/bangumi/shin", server.proxyGET)
+	r.Post("/api/v2/match", server.proxyPOST)
+	r.Post("/api/v2/match/batch", server.proxyPOST)
+
+	// Frontend static files
+	r.Handle("/*", server.frontendHandler())
+}

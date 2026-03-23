@@ -41,6 +41,7 @@ jobs:
       - name: Build backend
         working-directory: backend
         run: |
+          # Build current package directory (supports multi-file backend layout)
           go mod tidy
           mkdir -p ../build
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../build/proxy-server .
