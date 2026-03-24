@@ -10,6 +10,21 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// accountBannedForHTTP 与代理签名校验中的封禁逻辑一致：封禁期内或永久封禁则禁止 Web 会话访问。
+func accountBannedForHTTP(u User) bool {
+	if u.Status != "banned" {
+		return false
+	}
+	if !u.BanUntil.Valid {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, u.BanUntil.String)
+	if err != nil {
+		return true
+	}
+	return t.After(time.Now())
+}
+
 func (s *APIServer) findUserByAppID(appID string) (User, error) {
 	var u User
 	var secretShown int
@@ -72,6 +87,10 @@ func (s *APIServer) authUserMiddleware(next http.Handler) http.Handler {
 		u, err := s.parseJWT(strings.TrimPrefix(auth, "Bearer "))
 		if err != nil {
 			writeJSON(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid token", nil)
+			return
+		}
+		if accountBannedForHTTP(u) {
+			writeJSON(w, http.StatusForbidden, "BANNED", "account banned", nil)
 			return
 		}
 		// 将鉴权后的用户信息注入上下文，后续 handler 统一从 ctx 读取。

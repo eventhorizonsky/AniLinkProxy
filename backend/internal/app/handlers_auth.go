@@ -1,7 +1,7 @@
 package app
 
 import (
-	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -24,12 +24,12 @@ func (s *APIServer) handleSendRegisterCode(w http.ResponseWriter, r *http.Reques
 		Email          string `json:"email"`
 		TurnstileToken string `json:"turnstileToken"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", nil)
+	if !decodeJSONStrict(w, r, &req) {
 		return
 	}
 	if err := s.verifyTurnstile(req.TurnstileToken, s.clientIP(r)); err != nil {
-		writeJSON(w, http.StatusBadRequest, "TURNSTILE_INVALID", err.Error(), nil)
+		log.Printf("turnstile verify (register code): %v", err)
+		writeJSON(w, http.StatusBadRequest, "TURNSTILE_INVALID", "人机验证失败，请重试", nil)
 		return
 	}
 	if !strings.Contains(req.Email, "@") {
@@ -53,7 +53,8 @@ func (s *APIServer) handleSendRegisterCode(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.sendEmail(email, "AniLink Proxy 注册验证码", "验证码："+code+"，10分钟内有效。"); err != nil {
-		writeJSON(w, http.StatusInternalServerError, "SMTP_SEND_FAILED", err.Error(), nil)
+		log.Printf("smtp send register code: %v", err)
+		writeJSON(w, http.StatusInternalServerError, "SMTP_SEND_FAILED", "邮件发送失败，请稍后重试", nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, "OK", "sent", nil)
@@ -65,8 +66,7 @@ func (s *APIServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		EmailCode string `json:"emailCode"`
 		Password  string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", nil)
+	if !decodeJSONStrict(w, r, &req) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
@@ -101,8 +101,7 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password       string `json:"password"`
 		TurnstileToken string `json:"turnstileToken"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", nil)
+	if !decodeJSONStrict(w, r, &req) {
 		return
 	}
 	ip := s.clientIP(r)
@@ -113,20 +112,21 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.verifyTurnstile(req.TurnstileToken, ip); err != nil {
-		writeJSON(w, http.StatusBadRequest, "TURNSTILE_INVALID", err.Error(), nil)
+		log.Printf("turnstile verify (login): %v", err)
+		writeJSON(w, http.StatusBadRequest, "TURNSTILE_INVALID", "人机验证失败，请重试", nil)
 		return
 	}
 	var u User
 	var secretShown int
-	err := s.db.QueryRow(`SELECT id,email,password_hash,app_id,app_secret,secret_shown,role,status,created_at FROM users WHERE email=?`,
+	err := s.db.QueryRow(`SELECT id,email,password_hash,app_id,app_secret,secret_shown,role,status,ban_reason,ban_until,created_at FROM users WHERE email=?`,
 		email).
-		Scan(&u.ID, &u.Email, &u.Password, &u.AppID, &u.AppSecret, &secretShown, &u.Role, &u.Status, &u.CreatedAt)
+		Scan(&u.ID, &u.Email, &u.Password, &u.AppID, &u.AppSecret, &secretShown, &u.Role, &u.Status, &u.BanReason, &u.BanUntil, &u.CreatedAt)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, "LOGIN_FAILED", "invalid credentials", nil)
 		return
 	}
 	u.SecretSeen = secretShown == 1
-	if u.Status == "banned" {
+	if accountBannedForHTTP(u) {
 		writeJSON(w, http.StatusForbidden, "BANNED", "account banned", nil)
 		return
 	}

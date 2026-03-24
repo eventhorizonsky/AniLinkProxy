@@ -2,7 +2,6 @@ package app
 
 import (
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -38,7 +37,9 @@ func (s *APIServer) handleAdminBan(w http.ResponseWriter, r *http.Request) {
 		Reason  string `json:"reason"`
 		Minutes int    `json:"minutes"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !decodeJSONOptional(w, r, &req) {
+		return
+	}
 	if req.Minutes <= 0 {
 		req.Minutes = 60 * 24
 	}
@@ -83,8 +84,7 @@ func (s *APIServer) handleAdminGetConfig(w http.ResponseWriter, r *http.Request)
 
 func (s *APIServer) handleAdminUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var cfg RuntimeConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", nil)
+	if !decodeJSONStrict(w, r, &cfg) {
 		return
 	}
 	if cfg.TimestampToleranceSec <= 0 {

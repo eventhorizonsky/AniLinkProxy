@@ -95,7 +95,8 @@ func (s *APIServer) proxyRequest(w http.ResponseWriter, r *http.Request, canCach
 	s.attachUpstreamSignature(req, path)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, "UPSTREAM_FAILED", err.Error(), nil)
+		log.Printf("upstream request failed: %v", err)
+		writeJSON(w, http.StatusBadGateway, "UPSTREAM_FAILED", "upstream unavailable", nil)
 		s.recordMetric(user.AppID, endpoint, start, "UPSTREAM_FAILED")
 		s.createRiskEvent(user, "medium", "upstream_error", 1, err.Error())
 		return

@@ -135,24 +135,45 @@ func (m *MemoryCache) gcLoop() {
 	}
 }
 
+const (
+	rateLimiterGCInterval   = 5 * time.Minute
+	rateLimiterIdleTTL      = 20 * time.Minute
+	rateLimiterMaxBuckets   = 10000
+)
+
 func newRateLimiter() *RateLimiter {
-	return &RateLimiter{buckets: map[string]*bucket{}}
+	now := time.Now()
+	return &RateLimiter{buckets: map[string]*bucket{}, lastGC: now}
+}
+
+func (rl *RateLimiter) gcBuckets(now time.Time) {
+	cutoff := now.Add(-rateLimiterIdleTTL)
+	for k, b := range rl.buckets {
+		if b.LastUsed.Before(cutoff) {
+			delete(rl.buckets, k)
+		}
+	}
 }
 
 func (rl *RateLimiter) Allow(key string, limit EndpointLimit) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := time.Now()
+	if len(rl.buckets) > rateLimiterMaxBuckets || now.Sub(rl.lastGC) > rateLimiterGCInterval {
+		rl.gcBuckets(now)
+		rl.lastGC = now
+	}
 	b, ok := rl.buckets[key]
 	if !ok {
 		// 首次请求按 burst 初始化，并立即消费 1 个令牌。
-		rl.buckets[key] = &bucket{Tokens: limit.Burst - 1, LastRefill: now}
+		rl.buckets[key] = &bucket{Tokens: limit.Burst - 1, LastRefill: now, LastUsed: now}
 		return limit.Burst >= 1
 	}
 	// 令牌按经过时间 * RPS 回填，上限不超过 burst。
 	elapsed := now.Sub(b.LastRefill).Seconds()
 	b.Tokens = math.Min(limit.Burst, b.Tokens+elapsed*limit.RPS)
 	b.LastRefill = now
+	b.LastUsed = now
 	if b.Tokens >= 1 {
 		b.Tokens -= 1
 		return true

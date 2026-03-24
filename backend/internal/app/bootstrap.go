@@ -27,6 +27,10 @@ func Run() {
 	if err = db.Ping(); err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
+	// SQLite 单写者多读者场景：限制连接数，避免 1C1G 下过多并发写导致锁竞争与内存占用。
+	db.SetMaxOpenConns(3)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 	if err = initSchema(db); err != nil {
 		log.Fatalf("数据库初始化失败: %v", err)
 	}

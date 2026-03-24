@@ -100,11 +100,13 @@ type APIServer struct {
 type bucket struct {
 	Tokens     float64
 	LastRefill time.Time
+	LastUsed   time.Time
 }
 
 type RateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
+	lastGC  time.Time
 }
 
 type cacheValue struct {

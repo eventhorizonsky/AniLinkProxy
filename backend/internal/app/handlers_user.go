@@ -1,7 +1,7 @@
 package app
 
 import (
-	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,7 +40,8 @@ func (s *APIServer) handleSendResetCode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.sendEmail(u.Email, "AniLink Proxy Secret 操作验证码", "验证码："+code+"，10分钟内有效。"); err != nil {
-		writeJSON(w, http.StatusInternalServerError, "SMTP_SEND_FAILED", err.Error(), nil)
+		log.Printf("smtp send secret reset code: %v", err)
+		writeJSON(w, http.StatusInternalServerError, "SMTP_SEND_FAILED", "邮件发送失败，请稍后重试", nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, "OK", "sent", nil)
@@ -74,8 +75,7 @@ func (s *APIServer) handleResetSecret(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		EmailCode string `json:"emailCode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json", nil)
+	if !decodeJSONStrict(w, r, &req) {
 		return
 	}
 	ok, _ := s.verifyEmailCode(u.Email, "secret_reset", req.EmailCode)
