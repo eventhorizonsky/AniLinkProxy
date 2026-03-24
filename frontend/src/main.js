@@ -3,6 +3,8 @@ import { createRouter, createWebHistory } from "vue-router";
 import { createVuetify } from "vuetify";
 import * as components from "vuetify/components";
 import * as directives from "vuetify/directives";
+import { VDateInput } from "vuetify/labs/VDateInput";
+import { zhHans } from "vuetify/locale";
 import "vuetify/styles";
 import "@mdi/font/css/materialdesignicons.css";
 import App from "./App.vue";
@@ -11,7 +13,10 @@ import { authState, ensureSessionHydrated, syncAuthFromStorage } from "./auth";
 
 const router = createRouter({
   history: createWebHistory(),
-  routes
+  routes,
+  scrollBehavior() {
+    return { top: 0, left: 0 };
+  }
 });
 
 router.beforeEach(async (to) => {
@@ -32,7 +37,14 @@ router.beforeEach(async (to) => {
 window.addEventListener("storage", syncAuthFromStorage);
 
 const vuetify = createVuetify({
-  components,
-  directives
+  components: {
+    ...components,
+    VDateInput
+  },
+  directives,
+  locale: {
+    locale: "zhHans",
+    messages: { zhHans }
+  }
 });
 createApp(App).use(router).use(vuetify).mount("#app");
