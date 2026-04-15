@@ -190,3 +190,45 @@ func (s *APIServer) handleAdminAllRiskEvents(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, "OK", "", out)
 }
+
+func (s *APIServer) handleAdminUserStats(w http.ResponseWriter, r *http.Request) {
+	userID, _ := strconv.ParseInt(chi.URLParam(r, "userID"), 10, 64)
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	if from == "" {
+		from = time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+	}
+	if to == "" {
+		to = time.Now().Format("2006-01-02")
+	}
+	rows, err := s.db.Query(`SELECT endpoint, SUM(total), SUM(success), SUM(auth_fail), SUM(rate_limited), SUM(upstream_fail), SUM(timeout), SUM(total_latency_ms)
+		FROM app_metrics_daily WHERE app_id=(SELECT app_id FROM users WHERE id=?) AND date>=? AND date<=?
+		GROUP BY endpoint ORDER BY endpoint`, userID, from, to)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, "INTERNAL_ERROR", "query failed", nil)
+		return
+	}
+	defer rows.Close()
+	type rowData struct {
+		Endpoint     string  `json:"endpoint"`
+		Total        int64   `json:"total"`
+		Success      int64   `json:"success"`
+		AuthFail     int64   `json:"authFail"`
+		RateLimited  int64   `json:"rateLimited"`
+		UpstreamFail int64   `json:"upstreamFail"`
+		Timeout      int64   `json:"timeout"`
+		AvgLatencyMs float64 `json:"avgLatencyMs"`
+	}
+	var out []rowData
+	for rows.Next() {
+		var d rowData
+		var totalLatency int64
+		if err := rows.Scan(&d.Endpoint, &d.Total, &d.Success, &d.AuthFail, &d.RateLimited, &d.UpstreamFail, &d.Timeout, &totalLatency); err == nil {
+			if d.Total > 0 {
+				d.AvgLatencyMs = float64(totalLatency) / float64(d.Total)
+			}
+			out = append(out, d)
+		}
+	}
+	writeJSON(w, http.StatusOK, "OK", "", out)
+}

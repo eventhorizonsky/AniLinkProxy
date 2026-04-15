@@ -28,3 +28,7 @@ export async function apiAdminAllUserStats() {
 export async function apiAdminAllRiskEvents() {
   return apiGet("/admin/api/admin/risk/all-events");
 }
+
+export async function apiAdminUserStats(userId, params = {}) {
+  return apiGet(`/admin/api/admin/stats/user/${userId}`, params);
+}
