@@ -146,9 +146,9 @@ func (m *MemoryCache) gcLoop() {
 }
 
 const (
-	rateLimiterGCInterval   = 5 * time.Minute
-	rateLimiterIdleTTL      = 20 * time.Minute
-	rateLimiterMaxBuckets   = 10000
+	rateLimiterGCInterval = 5 * time.Minute
+	rateLimiterIdleTTL    = 20 * time.Minute
+	rateLimiterMaxBuckets = 10000
 )
 
 func newRateLimiter() *RateLimiter {
@@ -195,18 +195,17 @@ func (s *APIServer) adminCORSAllowOrigin(origin, host string) (allow string, ok 
 	if origin == "" {
 		return "", true
 	}
-	static := strings.TrimSpace(s.cfg.AdminAllowedOrigin)
-	if static != "" {
-		if origin == static {
-			return origin, true
-		}
-		return "", false
-	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
 		return "", false
 	}
+	// 同源请求（Origin 与请求 Host 一致）始终放行：前端由本服务静态托管时，
+	// /admin/api 的 POST/OPTIONS 也会带 Origin，不能因为 AdminAllowedOrigin 被设为别的跨域地址而误判为 403。
 	if strings.EqualFold(u.Host, host) {
+		return origin, true
+	}
+	static := strings.TrimSpace(s.cfg.AdminAllowedOrigin)
+	if static != "" && origin == static {
 		return origin, true
 	}
 	return "", false

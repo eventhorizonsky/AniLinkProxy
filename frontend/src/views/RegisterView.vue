@@ -2,7 +2,7 @@
   <v-row justify="center">
     <v-col cols="12" sm="10" md="6">
       <v-card :loading="siteKeyLoading">
-        <v-card-title>注册（邮箱验证码 + Turnstile）</v-card-title>
+        <v-card-title>注册（邮箱验证码 + 人机验证）</v-card-title>
         <v-card-text>
           <v-form ref="formRef" @submit.prevent="register">
             <v-text-field
@@ -25,15 +25,15 @@
             <div class="mb-3">
               <v-skeleton-loader v-if="siteKeyLoading" type="image" class="rounded" height="65" />
               <template v-else>
-                <TurnstileWidget
-                  v-if="turnstileSiteKey"
-                  ref="turnstileRef"
-                  :site-key="turnstileSiteKey"
-                  @verified="onTurnstileVerified"
-                  @expired="onTurnstileExpired"
-                  @error="onTurnstileError"
+                <CaptchaWidget
+                  ref="captchaRef"
+                  :provider="captchaProvider"
+                  :site-keys="captchaSiteKeys"
+                  action="register"
+                  @verified="onCaptchaVerified"
+                  @expired="onCaptchaExpired"
+                  @error="onCaptchaError"
                 />
-                <v-alert v-else type="warning" variant="tonal">Turnstile 未配置，请联系管理员设置 TURNSTILE_SITE_KEY。</v-alert>
               </template>
             </div>
 
@@ -71,7 +71,7 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { apiGet, apiPost } from "../api";
-import TurnstileWidget from "../components/TurnstileWidget.vue";
+import CaptchaWidget from "../components/CaptchaWidget.vue";
 import { showSuccessSnackbar } from "../snackbar";
 
 const router = useRouter();
@@ -83,9 +83,10 @@ const error = ref("");
 const sending = ref(false);
 const loading = ref(false);
 const siteKeyLoading = ref(true);
-const turnstileSiteKey = ref("");
-const turnstileToken = ref("");
-const turnstileRef = ref(null);
+const captchaProvider = ref("");
+const captchaSiteKeys = ref({ captchala: "", turnstile: "" });
+const captchaToken = ref("");
+const captchaRef = ref(null);
 const formRef = ref(null);
 const codeCooldownSec = ref(0);
 let cooldownTimer = null;
@@ -96,17 +97,17 @@ const rules = {
   passwordMin: (v) => (String(v || "").length >= 8) || "密码至少 8 位"
 };
 
-function onTurnstileVerified(token) {
-  turnstileToken.value = token;
+function onCaptchaVerified(token) {
+  captchaToken.value = token;
 }
 
-function onTurnstileExpired() {
-  turnstileToken.value = "";
+function onCaptchaExpired() {
+  captchaToken.value = "";
 }
 
-function onTurnstileError() {
-  turnstileToken.value = "";
-  error.value = "Turnstile 校验失败，请重试。";
+function onCaptchaError() {
+  captchaToken.value = "";
+  error.value = "人机校验失败，请重试。";
 }
 
 function startCooldown(seconds = 60) {
@@ -122,17 +123,30 @@ function startCooldown(seconds = 60) {
   }, 1000);
 }
 
-async function loadTurnstileSiteKey() {
+async function loadCaptchaConfig() {
   siteKeyLoading.value = true;
   error.value = "";
   try {
-    const res = await apiGet("/admin/api/auth/turnstile/site-key");
-    turnstileSiteKey.value = res.data?.siteKey || "";
+    const res = await apiGet("/admin/api/auth/captcha/config");
+    captchaProvider.value = res.data?.provider || "";
+    captchaSiteKeys.value = res.data?.providers || { captchala: "", turnstile: "" };
   } catch (e) {
     error.value = e?.response?.data?.message || e.message || "加载验证组件失败";
   } finally {
     siteKeyLoading.value = false;
   }
+}
+
+function switchToFallbackProvider() {
+  const next = captchaProvider.value === "captchala" ? "turnstile" : "captchala";
+  if (!captchaSiteKeys.value?.[next]) {
+    error.value = "人机验证服务暂不可用，请稍后重试";
+    return false;
+  }
+  captchaProvider.value = next;
+  captchaToken.value = "";
+  captchaRef.value?.reset?.();
+  return true;
 }
 
 async function sendCode() {
@@ -145,21 +159,31 @@ async function sendCode() {
   sending.value = true;
   error.value = "";
   try {
-    if (!turnstileToken.value) throw new Error("请先完成 Turnstile 验证");
+    if (!captchaToken.value) throw new Error("请先完成人机验证");
     const res = await apiPost("/admin/api/auth/email/send-register", {
       email: email.value,
-      turnstileToken: turnstileToken.value
+      captchaToken: captchaToken.value,
+      captchaProvider: captchaProvider.value,
+      captchaAction: "register"
     });
     if (res.code !== "OK") throw new Error(res.message || res.code);
     message.value = "邮箱验证码已发送，请查收邮件";
     showSuccessSnackbar("验证码已发送");
     startCooldown(60);
   } catch (e) {
+    if (e?.response?.data?.code === "CAPTCHA_FALLBACK" && switchToFallbackProvider()) {
+      error.value = "当前人机验证服务暂不可用，请用备用验证重新完成验证";
+      return;
+    }
+    if (e?.response?.data?.code === "CAPTCHA_INVALID") {
+      captchaRef.value?.reset?.();
+    }
     error.value = e?.response?.data?.message || e.message || "发送失败";
   } finally {
     sending.value = false;
-    turnstileToken.value = "";
-    turnstileRef.value?.reset?.();
+    captchaToken.value = "";
+    // 每次发送后重置验证码（token 单次有效）。
+    captchaRef.value?.reset?.();
   }
 }
 
@@ -185,7 +209,7 @@ async function register() {
   }
 }
 
-onMounted(loadTurnstileSiteKey);
+onMounted(loadCaptchaConfig);
 onUnmounted(() => {
   if (cooldownTimer) clearInterval(cooldownTimer);
 });

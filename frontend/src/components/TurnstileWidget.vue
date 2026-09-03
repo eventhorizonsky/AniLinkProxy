@@ -11,7 +11,7 @@ const props = defineProps({
   siteKey: { type: String, required: true }
 });
 
-const emit = defineEmits(["verified", "expired", "error"]);
+const emit = defineEmits(["verified", "expired", "error", "ready"]);
 const container = ref(null);
 let widgetId = null;
 
@@ -69,6 +69,7 @@ onMounted(async () => {
     await loadScript();
     await nextTick();
     renderWidget();
+    emit("ready");
   } catch (e) {
     emit("error", e);
   }

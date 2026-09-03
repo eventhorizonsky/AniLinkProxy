@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -58,6 +60,117 @@ func (s *APIServer) verifyTurnstile(token, remoteIP string) error {
 		return errors.New("turnstile rejected")
 	}
 	return nil
+}
+
+// verifyCaptcha 按“CaptchaLa 优先、额度不足降级 Cloudflare Turnstile”的规则校验验证码。
+// provider 为前端声明的验证码来源（captchala / turnstile），token 为对应组件生成的 token，
+// expectedAction 为该场景应匹配的业务标识（如 login / register），用于校验 token 作用域。
+func (s *APIServer) verifyCaptcha(provider, token, remoteIP, expectedAction string) (verifyOutcome, error) {
+	switch strings.TrimSpace(provider) {
+	case captchaProviderCaptchala:
+		if s.cfg.CaptchaLaSecretKey == "" {
+			// CaptchaLa 未配置完整 → 交给兜底提供方。
+			return verifyFallback, errors.New("captchala not configured")
+		}
+		outcome, err := s.verifyCaptchaLa(token, remoteIP, expectedAction)
+		if outcome == verifyFallback {
+			log.Printf("captchala fallback (verify): %v", err)
+		}
+		return outcome, err
+	case captchaProviderTurnstile, "":
+		if err := s.verifyTurnstile(token, remoteIP); err != nil {
+			return verifyRejected, err
+		}
+		return verifyOK, nil
+	default:
+		return verifyRejected, fmt.Errorf("unknown captcha provider: %s", provider)
+	}
+}
+
+// verifyCaptchaLa 调用 CaptchaLa 的服务端校验接口 POST /v1/validate。
+// 依据接口语义区分三类结果：验证失败（rejected）、额度/服务不可用（fallback）、通过（ok）。
+func (s *APIServer) verifyCaptchaLa(token, remoteIP, expectedAction string) (verifyOutcome, error) {
+	if strings.TrimSpace(token) == "" {
+		return verifyRejected, errors.New("captchala token is required")
+	}
+	payload := map[string]string{"pass_token": strings.TrimSpace(token)}
+	if remoteIP != "" {
+		payload["client_ip"] = remoteIP
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return verifyFallback, fmt.Errorf("captchala marshal failed: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, s.cfg.CaptchaLaVerifyURL, bytes.NewReader(body))
+	if err != nil {
+		return verifyFallback, fmt.Errorf("captchala request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-App-Key", s.cfg.CaptchaLaSiteKey)
+	req.Header.Set("X-App-Secret", s.cfg.CaptchaLaSecretKey)
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return verifyFallback, fmt.Errorf("captchala verify failed: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	var result struct {
+		Code    int    `json:"code"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Data    struct {
+			Valid    bool   `json:"valid"`
+			Degraded bool   `json:"degraded"`
+			Reason   string `json:"reason"`
+			Action   string `json:"action"`
+			Error    string `json:"error"`
+		} `json:"data"`
+	}
+	// 响应无法解析时视为服务/额度层面异常，交由上层降级（不要因此误判用户为机器人）。
+	if err = json.Unmarshal(raw, &result); err != nil {
+		return verifyFallback, fmt.Errorf("captchala parse failed (status=%d): %w", resp.StatusCode, err)
+	}
+	// 错误码可能出现在顶层 error（如 service_online）或 data.error（如 token_not_found）。
+	errCode := result.Error
+	if errCode == "" {
+		errCode = result.Data.Error
+	}
+	if errCode != "" {
+		// 命中“验证失败”错误码（token 无效/过期等）→ 拒绝；其余（额度/限流/服务异常等）→ 降级。
+		if captchalaIsVerificationCode(s.cfg.CaptchaLaVerifyErrKeys, errCode) {
+			return verifyRejected, fmt.Errorf("captchala rejected: %s", errCode)
+		}
+		return verifyFallback, fmt.Errorf("captchala unavailable: %s", errCode)
+	}
+	if result.Data.Valid {
+		// token 作用域不符：例如用 pay 场景的 token 登录 → 拒绝。
+		if expectedAction != "" && result.Data.Action != "" && result.Data.Action != expectedAction {
+			return verifyRejected, fmt.Errorf("captchala action mismatch: got %s want %s", result.Data.Action, expectedAction)
+		}
+		return verifyOK, nil
+	}
+	// 额度耗尽（degraded）→ 降级；其余 valid=false 视为验证失败 → 拒绝。
+	if result.Data.Degraded || strings.Contains(strings.ToLower(result.Data.Reason), "quota") {
+		return verifyFallback, fmt.Errorf("captchala degraded: %s", result.Data.Reason)
+	}
+	return verifyRejected, errors.New("captchala rejected: token invalid")
+}
+
+// captchalaIsVerificationCode 判断 CaptchaLa 返回的错误码是否属于“验证不通过”，
+// 而非额度不足/服务异常。判定关键字可通过 CAPTCHALA_VERIFY_ERROR_CODES 配置，默认见 config.go。
+func captchalaIsVerificationCode(rawKeys, code string) bool {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if code == "" {
+		return false
+	}
+	for _, k := range strings.Split(rawKeys, ",") {
+		if strings.ToLower(strings.TrimSpace(k)) == code {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *APIServer) ensureEmailSendAllowed(rateKey string, interval time.Duration) error {

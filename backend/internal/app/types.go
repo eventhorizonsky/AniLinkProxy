@@ -16,6 +16,24 @@ const (
 	roleAdmin = "admin"
 )
 
+// captchaProvider 标识验证码服务提供方。
+const (
+	captchaProviderCaptchala = "captchala"
+	captchaProviderTurnstile = "turnstile"
+)
+
+// verifyOutcome 表示一次验证码校验的结果，用于驱动“CaptchaLa 优先、额度不足回退 Cloudflare”的流程。
+type verifyOutcome int
+
+const (
+	// verifyOK 校验通过。
+	verifyOK verifyOutcome = iota
+	// verifyRejected 校验确认失败（token 无效/已过期等，用户系机器人），不应回退，直接拒绝。
+	verifyRejected
+	// verifyFallback 当前提供方暂时不可用（额度不足/服务异常等），应回退到其它提供方。
+	verifyFallback
+)
+
 type AppConfig struct {
 	ListenAddr string
 	Upstream   string
@@ -34,6 +52,13 @@ type AppConfig struct {
 
 	TurnstileSiteKey   string
 	TurnstileSecretKey string
+
+	// CaptchaLa 为优先使用的验证码提供方；额度不足时降级到 Turnstile。
+	CaptchaLaSiteKey       string
+	CaptchaLaSecretKey     string
+	CaptchaLaVerifyURL     string
+	CaptchaLaVerifyErrKeys string
+
 	AdminAllowedOrigin string
 	TrustedProxyCIDRs  string
 

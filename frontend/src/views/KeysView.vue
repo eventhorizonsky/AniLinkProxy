@@ -3,7 +3,7 @@
     <v-card-title>我的密钥</v-card-title>
     <v-card-text>
       <p class="text-body-2 text-medium-emphasis mb-4">
-        以下字段布局一致：左侧只读展示，右侧为复制。客户端请求路径需包含 <code>/api/v2/...</code>，与「API Base URL」拼接即为完整地址。
+        复制到您的应用中使用。请妥善保管 App Secret，避免泄露给他人。
       </p>
 
       <div class="d-flex flex-column flex-sm-row align-stretch mb-3">

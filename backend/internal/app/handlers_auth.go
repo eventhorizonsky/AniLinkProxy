@@ -11,25 +11,65 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-func (s *APIServer) handleTurnstileSiteKey(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.TurnstileSiteKey == "" {
-		writeJSON(w, http.StatusOK, "OK", "", map[string]string{"siteKey": ""})
-		return
+// handleCaptchaConfig 返回当前应优先使用的验证码提供方及其站点 key，供前端渲染对应组件。
+func (s *APIServer) handleCaptchaConfig(w http.ResponseWriter, r *http.Request) {
+	provider := ""
+	siteKey := ""
+	switch {
+	case s.cfg.CaptchaLaSiteKey != "":
+		provider = captchaProviderCaptchala
+		siteKey = s.cfg.CaptchaLaSiteKey
+	case s.cfg.TurnstileSiteKey != "":
+		provider = captchaProviderTurnstile
+		siteKey = s.cfg.TurnstileSiteKey
 	}
-	writeJSON(w, http.StatusOK, "OK", "", map[string]string{"siteKey": s.cfg.TurnstileSiteKey})
+	writeJSON(w, http.StatusOK, "OK", "", map[string]interface{}{
+		"provider": provider,
+		"siteKey":  siteKey,
+		"providers": map[string]map[string]string{
+			"captchala": {"siteKey": s.cfg.CaptchaLaSiteKey},
+			"turnstile": {"siteKey": s.cfg.TurnstileSiteKey},
+		},
+	})
+}
+
+// verifyCaptchaWithResponse 执行验证并依据结果写出对应错误响应；验证通过返回 true。
+// action 为该场景应匹配的 CaptchaLa 业务标识（如 login / register）。
+func (s *APIServer) verifyCaptchaWithResponse(w http.ResponseWriter, r *http.Request, scene, provider, token, action string) bool {
+	ip := s.clientIP(r)
+	outcome, err := s.verifyCaptcha(provider, token, ip, action)
+	switch outcome {
+	case verifyOK:
+		return true
+	case verifyFallback:
+		log.Printf("captcha fallback (%s): %v", scene, err)
+		writeJSON(w, http.StatusBadRequest, "CAPTCHA_FALLBACK", "人机验证服务当前不可用，请使用备用验证重试", nil)
+		return false
+	default:
+		log.Printf("captcha verify (%s): %v", scene, err)
+		writeJSON(w, http.StatusBadRequest, "CAPTCHA_INVALID", "人机验证失败，请重试", nil)
+		return false
+	}
 }
 
 func (s *APIServer) handleSendRegisterCode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email          string `json:"email"`
-		TurnstileToken string `json:"turnstileToken"`
+		Email           string `json:"email"`
+		CaptchaToken    string `json:"captchaToken"`
+		CaptchaProvider string `json:"captchaProvider"`
+		CaptchaAction   string `json:"captchaAction"`
+		TurnstileToken  string `json:"turnstileToken"` // 兼容旧字段
 	}
 	if !decodeJSONStrict(w, r, &req) {
 		return
 	}
-	if err := s.verifyTurnstile(req.TurnstileToken, s.clientIP(r)); err != nil {
-		log.Printf("turnstile verify (register code): %v", err)
-		writeJSON(w, http.StatusBadRequest, "TURNSTILE_INVALID", "人机验证失败，请重试", nil)
+	if req.CaptchaToken == "" {
+		req.CaptchaToken = req.TurnstileToken
+	}
+	if req.CaptchaAction == "" {
+		req.CaptchaAction = "register"
+	}
+	if !s.verifyCaptchaWithResponse(w, r, "register code", req.CaptchaProvider, req.CaptchaToken, req.CaptchaAction) {
 		return
 	}
 	if !strings.Contains(req.Email, "@") {
@@ -103,9 +143,12 @@ func (s *APIServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email          string `json:"email"`
-		Password       string `json:"password"`
-		TurnstileToken string `json:"turnstileToken"`
+		Email           string `json:"email"`
+		Password        string `json:"password"`
+		CaptchaToken    string `json:"captchaToken"`
+		CaptchaProvider string `json:"captchaProvider"`
+		CaptchaAction   string `json:"captchaAction"`
+		TurnstileToken  string `json:"turnstileToken"` // 兼容旧字段
 	}
 	if !decodeJSONStrict(w, r, &req) {
 		return
@@ -117,9 +160,13 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", "too many login attempts", nil)
 		return
 	}
-	if err := s.verifyTurnstile(req.TurnstileToken, ip); err != nil {
-		log.Printf("turnstile verify (login): %v", err)
-		writeJSON(w, http.StatusBadRequest, "TURNSTILE_INVALID", "人机验证失败，请重试", nil)
+	if req.CaptchaToken == "" {
+		req.CaptchaToken = req.TurnstileToken
+	}
+	if req.CaptchaAction == "" {
+		req.CaptchaAction = "login"
+	}
+	if !s.verifyCaptchaWithResponse(w, r, "login", req.CaptchaProvider, req.CaptchaToken, req.CaptchaAction) {
 		return
 	}
 	var u User
