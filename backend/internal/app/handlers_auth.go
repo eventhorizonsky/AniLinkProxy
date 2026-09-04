@@ -26,9 +26,10 @@ func (s *APIServer) handleCaptchaConfig(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, "OK", "", map[string]interface{}{
 		"provider": provider,
 		"siteKey":  siteKey,
-		"providers": map[string]map[string]string{
-			"captchala": {"siteKey": s.cfg.CaptchaLaSiteKey},
-			"turnstile": {"siteKey": s.cfg.TurnstileSiteKey},
+		// providers 为各提供方的站点 key，前端直接作为字符串使用（captchala/turnstile）。
+		"providers": map[string]string{
+			"captchala": s.cfg.CaptchaLaSiteKey,
+			"turnstile": s.cfg.TurnstileSiteKey,
 		},
 	})
 }

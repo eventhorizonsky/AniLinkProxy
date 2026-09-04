@@ -30,6 +30,9 @@
           @ready="loading = false"
         />
       </template>
+      <v-alert v-else-if="errorMsg" type="error" variant="tonal">
+        {{ errorMsg }}
+      </v-alert>
       <v-alert v-else type="warning" variant="tonal">
         人机验证尚未配置，请联系管理员设置 CAPTCHALA_* 或 TURNSTILE_SITE_KEY。
       </v-alert>
@@ -52,18 +55,30 @@ const props = defineProps({
   action: { type: String, default: "default" }
 });
 
-const emit = defineEmits(["verified", "expired", "error"]);
+const emit = defineEmits(["verified", "expired", "error", "provider-change"]);
 const childRef = ref(null);
 const loading = ref(false);
+const errorMsg = ref("");
+
+// 当前选中的提供方；由外部 provider 决定，渲染失败时可自动切到备用提供方。
+const selected = ref(props.provider || "");
 
 // 请求 provider 为 captchala 但未配置时，降级渲染 turnstile；反之亦然。
 const currentProvider = computed(() => {
-  if (props.provider === "captchala" && props.siteKeys.captchala) return "captchala";
-  if (props.provider === "turnstile" && props.siteKeys.turnstile) return "turnstile";
+  if (selected.value === "captchala" && props.siteKeys.captchala) return "captchala";
+  if (selected.value === "turnstile" && props.siteKeys.turnstile) return "turnstile";
   if (props.siteKeys.captchala) return "captchala";
   if (props.siteKeys.turnstile) return "turnstile";
   return "";
 });
+
+// 外部（父组件切换备用提供方）更新 provider 时，同步本地选中状态。
+watch(
+  () => props.provider,
+  (p) => {
+    selected.value = p;
+  }
+);
 
 // 选中一个提供方后进入加载态；子组件 ready 时结束加载态。
 watch(
@@ -74,12 +89,26 @@ watch(
   { immediate: true }
 );
 
+// 某个提供方的组件加载/初始化失败时：若另一个提供方已配置则自动切换并通知父组件，
+// 否则显示错误而不是留白，避免用户看到空白区域而不知发生了什么。
 function onChildError(e) {
   loading.value = false;
+  const cur = currentProvider.value;
+  const other = cur === "captchala" ? "turnstile" : "captchala";
+  const otherKey = other === "captchala" ? props.siteKeys.captchala : props.siteKeys.turnstile;
+  if (cur && otherKey) {
+    errorMsg.value = "";
+    selected.value = other;
+    emit("provider-change", other);
+    emit("error", e);
+    return;
+  }
+  errorMsg.value = e?.message || "人机验证组件加载失败，请刷新后重试";
   emit("error", e);
 }
 
 function reset() {
+  errorMsg.value = "";
   childRef.value?.reset?.();
 }
 

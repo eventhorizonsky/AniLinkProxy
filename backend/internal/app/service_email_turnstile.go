@@ -89,6 +89,7 @@ func (s *APIServer) verifyCaptcha(provider, token, remoteIP, expectedAction stri
 
 // verifyCaptchaLa 调用 CaptchaLa 的服务端校验接口 POST /v1/validate。
 // 依据接口语义区分三类结果：验证失败（rejected）、额度/服务不可用（fallback）、通过（ok）。
+// 网络/超时等瞬时错误会按配置重试数次；仍失败则视为 fallback，交由上层降级（不会误判用户为机器人）。
 func (s *APIServer) verifyCaptchaLa(token, remoteIP, expectedAction string) (verifyOutcome, error) {
 	if strings.TrimSpace(token) == "" {
 		return verifyRejected, errors.New("captchala token is required")
@@ -101,61 +102,94 @@ func (s *APIServer) verifyCaptchaLa(token, remoteIP, expectedAction string) (ver
 	if err != nil {
 		return verifyFallback, fmt.Errorf("captchala marshal failed: %w", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, s.cfg.CaptchaLaVerifyURL, bytes.NewReader(body))
-	if err != nil {
-		return verifyFallback, fmt.Errorf("captchala request failed: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-App-Key", s.cfg.CaptchaLaSiteKey)
-	req.Header.Set("X-App-Secret", s.cfg.CaptchaLaSecretKey)
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return verifyFallback, fmt.Errorf("captchala verify failed: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
 
-	var result struct {
-		Code    int    `json:"code"`
-		Error   string `json:"error"`
-		Message string `json:"message"`
-		Data    struct {
-			Valid    bool   `json:"valid"`
-			Degraded bool   `json:"degraded"`
-			Reason   string `json:"reason"`
-			Action   string `json:"action"`
-			Error    string `json:"error"`
-		} `json:"data"`
+	// 默认使用 http.DefaultTransport（尊重 HTTPS_PROXY/NO_PROXY 环境变量，
+	// 便于通过代理访问被墙的 Cloudflare 域名），并为单次请求设置超时。
+	timeout := s.cfg.CaptchaLaVerifyTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
 	}
-	// 响应无法解析时视为服务/额度层面异常，交由上层降级（不要因此误判用户为机器人）。
-	if err = json.Unmarshal(raw, &result); err != nil {
-		return verifyFallback, fmt.Errorf("captchala parse failed (status=%d): %w", resp.StatusCode, err)
+	client := &http.Client{Timeout: timeout}
+	attempts := s.cfg.CaptchaLaVerifyRetries + 1
+	if attempts < 1 {
+		attempts = 1
 	}
-	// 错误码可能出现在顶层 error（如 service_online）或 data.error（如 token_not_found）。
-	errCode := result.Error
-	if errCode == "" {
-		errCode = result.Data.Error
-	}
-	if errCode != "" {
-		// 命中“验证失败”错误码（token 无效/过期等）→ 拒绝；其余（额度/限流/服务异常等）→ 降级。
-		if captchalaIsVerificationCode(s.cfg.CaptchaLaVerifyErrKeys, errCode) {
-			return verifyRejected, fmt.Errorf("captchala rejected: %s", errCode)
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			// 指数退避后再重试，缓解瞬时网络抖动（封顶 2s）。
+			backoff := time.Duration(i) * 400 * time.Millisecond
+			if cap := 2 * time.Second; backoff > cap {
+				backoff = cap
+			}
+			time.Sleep(backoff)
 		}
-		return verifyFallback, fmt.Errorf("captchala unavailable: %s", errCode)
-	}
-	if result.Data.Valid {
-		// token 作用域不符：例如用 pay 场景的 token 登录 → 拒绝。
-		if expectedAction != "" && result.Data.Action != "" && result.Data.Action != expectedAction {
-			return verifyRejected, fmt.Errorf("captchala action mismatch: got %s want %s", result.Data.Action, expectedAction)
+		req, err := http.NewRequest(http.MethodPost, s.cfg.CaptchaLaVerifyURL, bytes.NewReader(body))
+		if err != nil {
+			return verifyFallback, fmt.Errorf("captchala request failed: %w", err)
 		}
-		return verifyOK, nil
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-App-Key", s.cfg.CaptchaLaSiteKey)
+		req.Header.Set("X-App-Secret", s.cfg.CaptchaLaSecretKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			// 网络/超时等未收到响应的瞬时错误：记录并重试（仍失败则作为 fallback 交给上层）。
+			lastErr = fmt.Errorf("captchala verify failed: %w", err)
+			continue
+		}
+		raw, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("captchala read failed (status=%d): %w", resp.StatusCode, readErr)
+			continue
+		}
+
+		var result struct {
+			Code    int    `json:"code"`
+			Error   string `json:"error"`
+			Message string `json:"message"`
+			Data    struct {
+				Valid    bool   `json:"valid"`
+				Degraded bool   `json:"degraded"`
+				Reason   string `json:"reason"`
+				Action   string `json:"action"`
+				Error    string `json:"error"`
+			} `json:"data"`
+		}
+		// 响应无法解析时视为服务/额度层面异常，交由上层降级（不要因此误判用户为机器人）。
+		if err = json.Unmarshal(raw, &result); err != nil {
+			return verifyFallback, fmt.Errorf("captchala parse failed (status=%d): %w", resp.StatusCode, err)
+		}
+		// 错误码可能出现在顶层 error（如 service_online）或 data.error（如 token_not_found）。
+		errCode := result.Error
+		if errCode == "" {
+			errCode = result.Data.Error
+		}
+		if errCode != "" {
+			// 命中“验证失败”错误码（token 无效/过期等）→ 拒绝；其余（额度/限流/服务异常等）→ 降级。
+			if captchalaIsVerificationCode(s.cfg.CaptchaLaVerifyErrKeys, errCode) {
+				return verifyRejected, fmt.Errorf("captchala rejected: %s", errCode)
+			}
+			return verifyFallback, fmt.Errorf("captchala unavailable: %s", errCode)
+		}
+		if result.Data.Valid {
+			// token 作用域不符：例如用 pay 场景的 token 登录 → 拒绝。
+			if expectedAction != "" && result.Data.Action != "" && result.Data.Action != expectedAction {
+				return verifyRejected, fmt.Errorf("captchala action mismatch: got %s want %s", result.Data.Action, expectedAction)
+			}
+			return verifyOK, nil
+		}
+		// 额度耗尽（degraded）→ 降级；其余 valid=false 视为验证失败 → 拒绝。
+		if result.Data.Degraded || strings.Contains(strings.ToLower(result.Data.Reason), "quota") {
+			return verifyFallback, fmt.Errorf("captchala degraded: %s", result.Data.Reason)
+		}
+		return verifyRejected, errors.New("captchala rejected: token invalid")
 	}
-	// 额度耗尽（degraded）→ 降级；其余 valid=false 视为验证失败 → 拒绝。
-	if result.Data.Degraded || strings.Contains(strings.ToLower(result.Data.Reason), "quota") {
-		return verifyFallback, fmt.Errorf("captchala degraded: %s", result.Data.Reason)
+	if lastErr == nil {
+		lastErr = errors.New("captchala verify failed")
 	}
-	return verifyRejected, errors.New("captchala rejected: token invalid")
+	return verifyFallback, lastErr
 }
 
 // captchalaIsVerificationCode 判断 CaptchaLa 返回的错误码是否属于“验证不通过”，

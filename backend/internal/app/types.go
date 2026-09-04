@@ -58,6 +58,10 @@ type AppConfig struct {
 	CaptchaLaSecretKey     string
 	CaptchaLaVerifyURL     string
 	CaptchaLaVerifyErrKeys string
+	// CaptchaLaVerifyTimeout 为服务端校验单次超时（默认 10s）；CAPTCHALA_VERIFY_TIMEOUT_SEC 配置。
+	CaptchaLaVerifyTimeout time.Duration
+	// CaptchaLaVerifyRetries 为网络/超时等瞬时错误时的额外重试次数（默认 1）；CAPTCHALA_VERIFY_RETRIES 配置。
+	CaptchaLaVerifyRetries int
 
 	AdminAllowedOrigin string
 	TrustedProxyCIDRs  string

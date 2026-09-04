@@ -34,6 +34,8 @@ func loadConfig() (AppConfig, error) {
 		CaptchaLaSecretKey:     os.Getenv("CAPTCHALA_SECRET_KEY"),
 		CaptchaLaVerifyURL:     getenv("CAPTCHALA_VERIFY_URL", "https://apiv1.captcha.la/v1/validate"),
 		CaptchaLaVerifyErrKeys: getenv("CAPTCHALA_VERIFY_ERROR_CODES", "token_expired,challenge_expired,challenge_not_found,invalid_answer,token_already_used,token_not_found"),
+		CaptchaLaVerifyTimeout: captchaVerifyTimeout(),
+		CaptchaLaVerifyRetries: captchaVerifyRetries(),
 		AdminAllowedOrigin:     strings.TrimSpace(os.Getenv("ADMIN_ALLOWED_ORIGIN")),
 		TrustedProxyCIDRs:      strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS")),
 		AuthCookieSecure:       isTruthyEnv("AUTH_COOKIE_SECURE"),
@@ -63,6 +65,27 @@ func loadConfig() (AppConfig, error) {
 func isTruthyEnv(key string) bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	return v == "1" || v == "true" || v == "yes"
+}
+
+// captchaVerifyTimeout 读取 CAPTCHALA_VERIFY_TIMEOUT_SEC（秒），默认 10s，非法值回退默认。
+func captchaVerifyTimeout() time.Duration {
+	sec, err := strconv.Atoi(strings.TrimSpace(os.Getenv("CAPTCHALA_VERIFY_TIMEOUT_SEC")))
+	if err != nil || sec <= 0 {
+		sec = 10
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// captchaVerifyRetries 读取 CAPTCHALA_VERIFY_RETRIES，默认 1，负数按 0 处理。
+func captchaVerifyRetries() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("CAPTCHALA_VERIFY_RETRIES")))
+	if err != nil {
+		return 1
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 func defaultRuntimeConfig() RuntimeConfig {

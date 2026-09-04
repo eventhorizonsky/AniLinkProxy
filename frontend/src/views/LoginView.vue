@@ -32,6 +32,7 @@
                   @verified="onCaptchaVerified"
                   @expired="onCaptchaExpired"
                   @error="onCaptchaError"
+                  @provider-change="captchaProvider = $event"
                 />
               </template>
             </div>
@@ -88,7 +89,10 @@ async function loadCaptchaConfig() {
   try {
     const res = await apiGet("/admin/api/auth/captcha/config");
     captchaProvider.value = res.data?.provider || "";
-    captchaSiteKeys.value = res.data?.providers || { captchala: "", turnstile: "" };
+    // 兼容后端返回扁平字符串（{captchala:"key",turnstile:"key"}）或嵌套对象（{captchala:{siteKey}}）两种形态。
+    const raw = res.data?.providers || {};
+    const keyOf = (v) => (typeof v === "string" ? v : (v && (v.siteKey || v.site_key)) || "");
+    captchaSiteKeys.value = { captchala: keyOf(raw.captchala), turnstile: keyOf(raw.turnstile) };
   } catch (e) {
     error.value = e?.response?.data?.message || e.message || "加载验证组件失败";
   } finally {
