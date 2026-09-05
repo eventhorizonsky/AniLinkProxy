@@ -50,16 +50,15 @@ func Run() {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		runtime:           runtimeCfg,
-		cache:             newMemoryCache(runtimeCfg.CacheMaxEntries, runtimeCfg.CacheMaxBytes, runtimeCfg.CacheMaxItemBytes),
-		rl:                newRateLimiter(),
-		authRL:            newRateLimiter(),
-		matchLock:         map[string]time.Time{},
-		replaySeen:        map[string]time.Time{},
-		captchaChallenges: map[string]captchaChallenge{},
-		metricCh:          make(chan metricEvent, 4096),
-		riskCh:            make(chan riskEvent, 2048),
-		trustedProxyNets:  parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs),
+		runtime:          runtimeCfg,
+		cache:            newMemoryCache(runtimeCfg.CacheMaxEntries, runtimeCfg.CacheMaxBytes, runtimeCfg.CacheMaxItemBytes),
+		rl:               newRateLimiter(),
+		authRL:           newRateLimiter(),
+		matchLock:        map[string]time.Time{},
+		replaySeen:       map[string]time.Time{},
+		metricCh:         make(chan metricEvent, 4096),
+		riskCh:           make(chan riskEvent, 2048),
+		trustedProxyNets: parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs),
 	}
 	// 启动后台维护协程：缓存过期清理 + match 锁兜底回收。
 	go server.cache.gcLoop()

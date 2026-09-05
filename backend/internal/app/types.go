@@ -115,12 +115,6 @@ type User struct {
 	CreatedAt          string
 }
 
-// captchaChallenge 表示一道纯本地验证码题目，答案仅存于服务端内存。
-type captchaChallenge struct {
-	Answer   string
-	ExpireAt time.Time
-}
-
 type APIServer struct {
 	cfg              AppConfig
 	db               *sql.DB
@@ -139,10 +133,6 @@ type APIServer struct {
 
 	replayMu   sync.Mutex
 	replaySeen map[string]time.Time
-
-	// captchaMu 保护纯本地验证码题目存储（captchaChallenges）。
-	captchaMu         sync.Mutex
-	captchaChallenges map[string]captchaChallenge
 
 	metricCh chan metricEvent
 	riskCh   chan riskEvent

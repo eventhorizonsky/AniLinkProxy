@@ -11,18 +11,26 @@
     >
       <v-icon>mdi-refresh</v-icon>
     </v-btn>
-    <span class="text-body-1" style="font-size: 1.15rem; letter-spacing: 1px; user-select: none">
-      <template v-if="question">{{ question }}</template>
-      <v-skeleton-loader v-else type="text" width="110" class="d-inline-block" />
+    <span class="flex-grow-0">
+      <img
+        v-if="image"
+        :src="image"
+        alt="验证码"
+        class="rounded"
+        style="width: 160px; height: 54px; object-fit: contain; display: block; background: #eaeaea; cursor: pointer"
+        title="点击刷新"
+        @click="refresh"
+      />
+      <v-skeleton-loader v-else type="image" class="rounded" width="160" height="54" />
     </span>
     <v-text-field
       v-model="answer"
-      label="计算并输入答案"
+      label="输入图中数字"
       density="compact"
       hide-details="auto"
       class="flex-grow-1"
       maxlength="6"
-      :disabled="loading || !question"
+      :disabled="loading || !image"
       @update:model-value="onAnswerChange"
     />
   </div>
@@ -34,24 +42,24 @@ import { apiGet } from "../api";
 
 const emit = defineEmits(["verified", "expired", "error", "ready"]);
 
-const question = ref("");
+const image = ref("");
 const challengeId = ref("");
 const answer = ref("");
 const loading = ref(false);
 
-// 拉取一道新的本地验证码题目；作废旧题并清空父组件缓存的 token。
+// 拉取一道新的本地图形验证码；作废旧题并清空父组件缓存的 token。
 async function fetchChallenge() {
   loading.value = true;
-  question.value = "";
+  image.value = "";
   challengeId.value = "";
   answer.value = "";
   emit("expired");
   try {
     const res = await apiGet("/admin/api/auth/captcha/challenge");
     const data = res?.data || {};
-    question.value = data.question || "";
+    image.value = data.image || "";
     challengeId.value = data.challengeId || "";
-    if (question.value && challengeId.value) {
+    if (image.value && challengeId.value) {
       emit("ready");
     } else {
       emit("error", new Error("本地验证码加载失败"));
