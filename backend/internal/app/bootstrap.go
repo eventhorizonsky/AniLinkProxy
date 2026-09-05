@@ -50,15 +50,16 @@ func Run() {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		runtime:          runtimeCfg,
-		cache:            newMemoryCache(runtimeCfg.CacheMaxEntries, runtimeCfg.CacheMaxBytes, runtimeCfg.CacheMaxItemBytes),
-		rl:               newRateLimiter(),
-		authRL:           newRateLimiter(),
-		matchLock:        map[string]time.Time{},
-		replaySeen:       map[string]time.Time{},
-		metricCh:         make(chan metricEvent, 4096),
-		riskCh:           make(chan riskEvent, 2048),
-		trustedProxyNets: parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs),
+		runtime:           runtimeCfg,
+		cache:             newMemoryCache(runtimeCfg.CacheMaxEntries, runtimeCfg.CacheMaxBytes, runtimeCfg.CacheMaxItemBytes),
+		rl:                newRateLimiter(),
+		authRL:            newRateLimiter(),
+		matchLock:         map[string]time.Time{},
+		replaySeen:        map[string]time.Time{},
+		captchaChallenges: map[string]captchaChallenge{},
+		metricCh:          make(chan metricEvent, 4096),
+		riskCh:            make(chan riskEvent, 2048),
+		trustedProxyNets:  parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs),
 	}
 	// 启动后台维护协程：缓存过期清理 + match 锁兜底回收。
 	go server.cache.gcLoop()
@@ -97,6 +98,8 @@ func registerRoutes(r chi.Router, server *APIServer) {
 			writeJSON(w, http.StatusOK, "OK", "running", map[string]string{"time": time.Now().Format(time.RFC3339)})
 		})
 		admin.Get("/auth/captcha/config", server.handleCaptchaConfig)
+		// 纯本地验证码（CAPTCHA_PROVIDER=local）时，前端据此获取题目。
+		admin.Get("/auth/captcha/challenge", server.handleCaptchaChallenge)
 		// 兼容旧路径：返回当前激活 provider 的 siteKey。
 		admin.Get("/auth/turnstile/site-key", server.handleCaptchaConfig)
 		admin.Post("/auth/email/send-register", server.handleSendRegisterCode)

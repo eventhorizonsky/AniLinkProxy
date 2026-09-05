@@ -16,6 +16,9 @@ func (s *APIServer) handleCaptchaConfig(w http.ResponseWriter, r *http.Request) 
 	provider := ""
 	siteKey := ""
 	switch {
+	case s.cfg.CaptchaProvider == captchaProviderLocal:
+		// CAPTCHA_PROVIDER=local 时强制使用纯本地验证码，无需任何站点 key。
+		provider = captchaProviderLocal
 	case s.cfg.CaptchaLaSiteKey != "":
 		provider = captchaProviderCaptchala
 		siteKey = s.cfg.CaptchaLaSiteKey

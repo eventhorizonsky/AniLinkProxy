@@ -36,6 +36,7 @@ func loadConfig() (AppConfig, error) {
 		CaptchaLaVerifyErrKeys: getenv("CAPTCHALA_VERIFY_ERROR_CODES", "token_expired,challenge_expired,challenge_not_found,invalid_answer,token_already_used,token_not_found"),
 		CaptchaLaVerifyTimeout: captchaVerifyTimeout(),
 		CaptchaLaVerifyRetries: captchaVerifyRetries(),
+		CaptchaProvider:        strings.TrimSpace(os.Getenv("CAPTCHA_PROVIDER")),
 		AdminAllowedOrigin:     strings.TrimSpace(os.Getenv("ADMIN_ALLOWED_ORIGIN")),
 		TrustedProxyCIDRs:      strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS")),
 		AuthCookieSecure:       isTruthyEnv("AUTH_COOKIE_SECURE"),

@@ -67,6 +67,9 @@ func (s *APIServer) verifyTurnstile(token, remoteIP string) error {
 // expectedAction 为该场景应匹配的业务标识（如 login / register），用于校验 token 作用域。
 func (s *APIServer) verifyCaptcha(provider, token, remoteIP, expectedAction string) (verifyOutcome, error) {
 	switch strings.TrimSpace(provider) {
+	case captchaProviderLocal:
+		// 纯本地验证码：答辩校验在服务端内存完成，不发起任何外部请求。
+		return s.verifyLocalCaptcha(token)
 	case captchaProviderCaptchala:
 		if s.cfg.CaptchaLaSecretKey == "" {
 			// CaptchaLa 未配置完整 → 交给兜底提供方。

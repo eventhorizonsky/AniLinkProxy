@@ -9,7 +9,16 @@
       <span class="text-body-2 text-medium-emphasis">正在加载人机验证…</span>
     </div>
     <div>
-      <template v-if="currentProvider === 'captchala' && siteKeys.captchala">
+      <template v-if="currentProvider === 'local'">
+        <LocalCaptchaWidget
+          ref="childRef"
+          @verified="(t) => emit('verified', t)"
+          @expired="() => emit('expired')"
+          @error="onChildError"
+          @ready="loading = false"
+        />
+      </template>
+      <template v-else-if="currentProvider === 'captchala' && siteKeys.captchala">
         <CaptchaLaWidget
           ref="childRef"
           :app-key="siteKeys.captchala"
@@ -34,7 +43,7 @@
         {{ errorMsg }}
       </v-alert>
       <v-alert v-else type="warning" variant="tonal">
-        人机验证尚未配置，请联系管理员设置 CAPTCHALA_* 或 TURNSTILE_SITE_KEY。
+        人机验证尚未配置，请联系管理员设置 CAPTCHALA_*、TURNSTILE_SITE_KEY 或 CAPTCHA_PROVIDER=local。
       </v-alert>
     </div>
   </div>
@@ -44,6 +53,7 @@
 import { computed, ref, watch } from "vue";
 import CaptchaLaWidget from "./CaptchaLaWidget.vue";
 import TurnstileWidget from "./TurnstileWidget.vue";
+import LocalCaptchaWidget from "./LocalCaptchaWidget.vue";
 
 const props = defineProps({
   provider: { type: String, default: "" },
@@ -63,8 +73,9 @@ const errorMsg = ref("");
 // 当前选中的提供方；由外部 provider 决定，渲染失败时可自动切到备用提供方。
 const selected = ref(props.provider || "");
 
-// 请求 provider 为 captchala 但未配置时，降级渲染 turnstile；反之亦然。
+// 请求 provider 为 local 时直接渲染纯本地验证码；否则按配置的站点 key 降级逐步渲染 captchala/turnstile。
 const currentProvider = computed(() => {
+  if (selected.value === "local") return "local";
   if (selected.value === "captchala" && props.siteKeys.captchala) return "captchala";
   if (selected.value === "turnstile" && props.siteKeys.turnstile) return "turnstile";
   if (props.siteKeys.captchala) return "captchala";
@@ -94,6 +105,12 @@ watch(
 function onChildError(e) {
   loading.value = false;
   const cur = currentProvider.value;
+  if (cur === "local") {
+    // 本地验证码无备用提供方，直接提示错误。
+    errorMsg.value = e?.message || "本地验证码加载失败，请刷新后重试";
+    emit("error", e);
+    return;
+  }
   const other = cur === "captchala" ? "turnstile" : "captchala";
   const otherKey = other === "captchala" ? props.siteKeys.captchala : props.siteKeys.turnstile;
   if (cur && otherKey) {

@@ -20,6 +20,8 @@ const (
 const (
 	captchaProviderCaptchala = "captchala"
 	captchaProviderTurnstile = "turnstile"
+	// captchaProviderLocal 为纯本地验证码：无需外部服务，题目与校验均在服务端内存完成。
+	captchaProviderLocal = "local"
 )
 
 // verifyOutcome 表示一次验证码校验的结果，用于驱动“CaptchaLa 优先、额度不足回退 Cloudflare”的流程。
@@ -62,6 +64,10 @@ type AppConfig struct {
 	CaptchaLaVerifyTimeout time.Duration
 	// CaptchaLaVerifyRetries 为网络/超时等瞬时错误时的额外重试次数（默认 1）；CAPTCHALA_VERIFY_RETRIES 配置。
 	CaptchaLaVerifyRetries int
+
+	// CaptchaProvider 用于强制指定验证码提供方：配置为 "local" 时使用纯本地验证码，
+	// 否则（默认留空）按“CaptchaLa 优先、回退 Turnstile”自动检测。
+	CaptchaProvider string
 
 	AdminAllowedOrigin string
 	TrustedProxyCIDRs  string
@@ -109,6 +115,12 @@ type User struct {
 	CreatedAt          string
 }
 
+// captchaChallenge 表示一道纯本地验证码题目，答案仅存于服务端内存。
+type captchaChallenge struct {
+	Answer   string
+	ExpireAt time.Time
+}
+
 type APIServer struct {
 	cfg              AppConfig
 	db               *sql.DB
@@ -127,6 +139,10 @@ type APIServer struct {
 
 	replayMu   sync.Mutex
 	replaySeen map[string]time.Time
+
+	// captchaMu 保护纯本地验证码题目存储（captchaChallenges）。
+	captchaMu         sync.Mutex
+	captchaChallenges map[string]captchaChallenge
 
 	metricCh chan metricEvent
 	riskCh   chan riskEvent
